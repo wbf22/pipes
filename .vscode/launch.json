@@ -9,7 +9,20 @@
             "type": "debugpy",
             "request": "launch",
             "program": "server.py",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "args": [
+                "--server"
+            ]
+        },
+                {
+            "name": "Client",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "server.py",
+            "console": "integratedTerminal",
+            "args": [
+
+            ]
         }
     ]
 }

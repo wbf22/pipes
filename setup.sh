@@ -7,3 +7,4 @@ pip3 install pyautogui
 pip3 install pillow
 pip3 install screeninfo
 pip3 install mss
+pip3 install PyQt5
