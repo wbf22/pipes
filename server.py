@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 import tkinter as tk
 import dearpygui.dearpygui as dpg
 from PyQt5.QtWidgets import QApplication, QLabel
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer
 import sys
 import concurrent
@@ -36,6 +36,7 @@ PORT = 8000
 FPS = 30
 FRAME_DURATION = 1.0 / FPS
 IMAGE_QUALITY = 92
+MONITOR = 1
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 FRAME_BOUNDRY = b"--frame"
@@ -268,11 +269,41 @@ def stream(url: str, headers={}, dest_file: str = None, timeout=10):
     raise Exception("Too many redirects")
 
 def get_next_stream_frame(stream_obj):
-    # process response
+    # # process response
+    # buffer = b""
+
+    # while True:
+    #     chunk = stream_obj.read(1024)  # read in small chunks
+    #     if not chunk:
+    #         break
+    #     buffer += chunk
+
+    #     # Look for frame boundary
+    #     while True:
+    #         start = buffer.find(FRAME_BOUNDRY)
+    #         if start == -1:
+    #             break
+    #         end = buffer.find(FRAME_BOUNDRY, start + len(FRAME_BOUNDRY))
+    #         if end == -1:
+    #             break
+
+    #         # Extract the full frame section
+    #         frame_section = buffer[start + len(FRAME_BOUNDRY):end]
+    #         buffer = buffer[end:]  # keep remaining
+
+    #         # Split headers from JPEG binary
+    #         header_end = frame_section.find(b"\r\n\r\n")
+    #         if header_end == -1:
+    #             continue
+    #         headers = frame_section[:header_end]
+    #         jpeg_data = frame_section[header_end + 4:]
+
+    #         return jpeg_data
+
     buffer = b""
 
     while True:
-        chunk = stream_obj.read(1024)  # read in small chunks
+        chunk = stream_obj.read(1024)
         if not chunk:
             break
         buffer += chunk
@@ -282,22 +313,49 @@ def get_next_stream_frame(stream_obj):
             start = buffer.find(FRAME_BOUNDRY)
             if start == -1:
                 break
+
+            # Find the next boundary to determine frame end
             end = buffer.find(FRAME_BOUNDRY, start + len(FRAME_BOUNDRY))
             if end == -1:
-                break
+                break  # Wait for more data
 
-            # Extract the full frame section
-            frame_section = buffer[start + len(FRAME_BOUNDRY):end]
-            buffer = buffer[end:]  # keep remaining
+            # Extract the frame segment
+            frame_segment = buffer[start + len(FRAME_BOUNDRY):end]
+            buffer = buffer[end:]  # Keep the remaining buffer
 
-            # Split headers from JPEG binary
-            header_end = frame_section.find(b"\r\n\r\n")
+            # Find end of headers (look for double CRLF)
+            header_end = frame_segment.find(b"\r\n\r\n")
             if header_end == -1:
-                continue
-            headers = frame_section[:header_end]
-            jpeg_data = frame_section[header_end + 4:]
+                continue  # Wait for full headers
 
-            return jpeg_data
+            # Separate headers and raw data
+            headers_bytes = frame_segment[:header_end]
+            raw_data = frame_segment[header_end + 4:]
+
+            # Optionally, parse headers (e.g., width, height, format)
+            headers_lines = headers_bytes.split(b"\r\n")
+            headers = {}
+            for line in headers_lines:
+                if b":" in line:
+                    key, value = line.split(b":", 1)
+                    headers[key.strip().lower()] = value.strip()
+
+            # Example: headers might include width, height, format
+            width = int(headers.get(b"x-width", 0))
+            height = int(headers.get(b"x-height", 0))
+            pixel_format = headers.get(b"x-format", b"BGRA").decode()
+
+            # Now, raw_data contains the pixel bytes
+            # You can process it accordingly, e.g.,
+            # convert to an image, process pixels, etc.
+
+            # For example, returning or processing the raw image data:
+            return {
+                "width": width,
+                "height": height,
+                "format": pixel_format,
+                "data": raw_data
+            }
 
 
 
@@ -424,13 +482,39 @@ def CLIENT_STREAM(host):
             # with open(f"frame.jpg", "wb") as f:
             #     f.write(frame)
 
-            pixmap = QPixmap()
-            pixmap.loadFromData(frame, "JPEG")
+            # pixmap = QPixmap()
+            # pixmap.loadFromData(frame, "JPEG")
 
-            # Scale pixmap to the window height while keeping aspect ratio
+            # # Scale pixmap to the window height while keeping aspect ratio
+            # window_height = label.height()
+            # scaled_pixmap = pixmap.scaledToHeight(window_height, Qt.SmoothTransformation)
+
+            # label.setPixmap(scaled_pixmap)
+
+            img = QImage(
+                frame["data"],                # raw bytes
+                frame["width"],
+                frame["height"],
+                frame["width"] * 3,          # bytes per line (for RGB it's width * 3)
+                QImage.Format_RGB888
+            )
+
+            # QImage expects RGB, but MSS gives BGRA → strip alpha and convert
+            img = img.rgbSwapped()
+
+            # Convert QImage → QPixmap
+            pixmap = QPixmap.fromImage(img)
+
+
+
+            # Convert QImage to QPixmap
+            pixmap = QPixmap.fromImage(img)
+
+            # Scale pixmap to fit window
             window_height = label.height()
             scaled_pixmap = pixmap.scaledToHeight(window_height, Qt.SmoothTransformation)
 
+            # Set pixmap to label
             label.setPixmap(scaled_pixmap)
 
 
@@ -478,26 +562,39 @@ def STREAM(handler):
     handler.end_headers()
 
     with mss.mss() as sct:
-        monitor = sct.monitors[3]  # choose your monitor index
+        monitor = sct.monitors[MONITOR]  # choose your monitor index
         while True:
             capture_start = time.time()
 
             # Capture screen
             sct_img = sct.grab(monitor)
-            img = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
+            # img = Image.frombytes('RGB', sct_img.size, sct_img.bgra, 'raw', 'BGRX')
 
-            # Encode to JPEG in memory
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG', quality=IMAGE_QUALITY)
-            frame = buf.getvalue()
+            # # Encode to JPEG in memory
+            # buf = io.BytesIO()
+            # img.save(buf, format='JPEG', quality=IMAGE_QUALITY)
+            # frame = buf.getvalue()
 
             # Write multipart frame
             try:
+                # handler.wfile.write(FRAME_BOUNDRY + b"\r\n")
+                # handler.wfile.write(b"Content-Type: image/jpeg\r\n")
+                # handler.wfile.write(b"Content-Length: " + str(len(frame)).encode() + b"\r\n")
+                # handler.wfile.write(b"\r\n")
+                # handler.wfile.write(frame)
+                # handler.wfile.write(b"\r\n")
+
+                header = (
+                    f"Content-Type: application/octet-stream\r\n"
+                    f"X-Width: {sct_img.width}\r\n"
+                    f"X-Height: {sct_img.height}\r\n"
+                    f"X-Format: BGRA\r\n"
+                    f"Content-Length: {len(sct_img.bgra)}\r\n"
+                ).encode()
                 handler.wfile.write(FRAME_BOUNDRY + b"\r\n")
-                handler.wfile.write(b"Content-Type: image/jpeg\r\n")
-                handler.wfile.write(b"Content-Length: " + str(len(frame)).encode() + b"\r\n")
+                handler.wfile.write(header + b"\r\n")
                 handler.wfile.write(b"\r\n")
-                handler.wfile.write(frame)
+                handler.wfile.write(sct_img.bgra)
                 handler.wfile.write(b"\r\n")
             except (BrokenPipeError, ConnectionResetError):
                 # Client disconnected
